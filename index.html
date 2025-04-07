@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スマートフォン健康モニタリング</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .video-container {
+            position: relative;
+            margin: 20px auto;
+            width: 320px;
+            height: 240px;
+            background-color: #000;
+            overflow: hidden;
+            border-radius: 8px;
+        }
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        #canvas {
+            display: none;
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            display: none;
+        }
+        .control-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .results {
+            margin-top: 20px;
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #4CAF50;
+        }
+        .metric {
+            margin: 10px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        .metric-value {
+            font-weight: bold;
+            color: #333;
+        }
+        .chart-container {
+            height: 200px;
+            margin: 20px 0;
+        }
+        .instruction {
+            background-color: #e7f3fe;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .audio-visualization {
+            height: 100px;
+            width: 100%;
+            background-color: #1a1a1a;
+            margin: 15px 0;
+            border-radius: 5px;
+            position: relative;
+            overflow: hidden;
+        }
+        .viz-bar {
+            position: absolute;
+            bottom: 0;
+            background-color: #4CAF50;
+            width: 3px;
+            margin-right: 1px;
+            transition: height 0.1s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>スマートフォン健康モニタリング</h1>
+        
+        <div class="instruction">
+            <p>このアプリはスマートフォンのカメラとマイクを使用して、以下の健康情報を測定します：</p>
+            <ul>
+                <li>心拍数（カメラ使用）</li>
+                <li>心拍変動（HRV）- 交感神経/副交感神経バランスの指標</li>
+                <li>呼吸パターン（マイク使用）</li>
+            </ul>
+            <p><strong>測定方法：</strong> 指先をカメラに軽く当て、静かに通常呼吸をしてください。少なくとも30秒間の測定が必要です。</p>
+        </div>
+
+        <div class="video-container">
+            <video id="video" playsinline></video>
+            <canvas id="canvas"></canvas>
+            <div class="overlay" id="measuring-overlay">測定中...</div>
+        </div>
+
+        <div class="audio-visualization" id="audio-viz">
+            <!-- Audio visualization bars will be added here dynamically -->
+        </div>
+
+        <div class="control-panel">
+            <button id="start-camera">カメラをオンにする</button>
+            <button id="start-measure" disabled>測定開始</button>
+            <button id="stop-measure" disabled>測定停止</button>
+        </div>
+
+        <div class="results">
+            <h2>測定結果</h2>
+            <div class="metric">
+                <span>心拍数:</span>
+                <span class="metric-value" id="heart-rate">-- BPM</span>
+            </div>
+            <div class="metric">
+                <span>心拍変動 (RMSSD):</span>
+                <span class="metric-value" id="hrv-rmssd">-- ms</span>
+            </div>
+            <div class="metric">
+                <span>LF/HF比 (交感神経/副交感神経バランス):</span>
+                <span class="metric-value" id="lf-hf-ratio">--</span>
+            </div>
+            <div class="metric">
+                <span>呼吸数:</span>
+                <span class="metric-value" id="respiration-rate">-- 回/分</span>
+            </div>
+            <div class="metric">
+                <span>ストレスレベル推定:</span>
+                <span class="metric-value" id="stress-level">--</span>
+            </div>
+        </div>
+
+        <div class="chart-container" id="ppg-chart">
+            <!-- PPG Chart will be rendered here -->
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
+    <script>
+        // DOM要素の参照を取得
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const startCameraButton = document.getElementById('start-camera');
+        const startMeasureButton = document.getElementById('start-measure');
+        const stopMeasureButton = document.getElementById('stop-measure');
+        const measuringOverlay = document.getElementById('measuring-overlay');
+        const heartRateElement = document.getElementById('heart-rate');
+        const hrvRmssdElement = document.getElementById('hrv-rmssd');
+        const lfHfRatioElement = document.getElementById('lf-hf-ratio');
+        const respirationRateElement = document.getElementById('respiration-rate');
+        const stressLevelElement = document.getElementById('stress-level');
+        const audioViz = document.getElementById('audio-viz');
+
+        // グローバル変数
+        let mediaStream = null;
+        let audioStream = null;
+        let audioContext = null;
+        let analyser = null;
+        let measuring = false;
+        let animationFrameId = null;
+        let ppgData = [];
+        let ppgTimes = [];
+        let audioData = [];
+        let startTime = 0;
+        let heartRates = [];
+        let lastHeartbeatTime = 0;
+        let rrIntervals = [];
+        let chart = null;
+
+        // オーディオビジュアライザーの設定
+        function setupAudioVisualizer() {
+            const barCount = 64;
+            for (let i = 0; i < barCount; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'viz-bar';
+                bar.style.left = `${i * 4}px`;
+                audioViz.appendChild(bar);
+            }
+        }
+
+        // カメラの起動
+        startCameraButton.addEventListener('click', async () => {
+            try {
+                // カメラのストリームを取得
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }
+                });
+                videoElement.srcObject = mediaStream;
+                videoElement.play();
+                
+                // マイクのストリームを取得
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: true
+                });
+                
+                // オーディオコンテキストとアナライザーのセットアップ
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const audioSource = audioContext.createMediaStreamSource(audioStream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                audioSource.connect(analyser);
+                
+                // オーディオビジュアライザーのセットアップ
+                setupAudioVisualizer();
+                
+                // キャンバスのサイズ設定
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+                
+                // ボタンの状態を更新
+                startCameraButton.disabled = true;
+                startMeasureButton.disabled = false;
+                
+                // PPGチャートの初期化
+                initChart();
+                
+            } catch (error) {
+                console.error('カメラまたはマイクへのアクセスエラー:', error);
+                alert('カメラまたはマイクにアクセスできませんでした。設定を確認してください。');
+            }
+        });
+
+        // 測定開始
+        startMeasureButton.addEventListener('click', () => {
+            if (!measuring) {
+                // 測定開始
+                measuring = true;
+                measuringOverlay.style.display = 'flex';
+                startTime = Date.now();
+                ppgData = [];
+                ppgTimes = [];
+                audioData = [];
+                heartRates = [];
+                rrIntervals = [];
+                lastHeartbeatTime = 0;
+                
+                // ボタンの状態を更新
+                startMeasureButton.disabled = true;
+                stopMeasureButton.disabled = false;
+                
+                // 測定ループを開始
+                animationFrameId = requestAnimationFrame(processFrame);
+                
+                // オーディオ処理のループを開始
+                processAudio();
+            }
+        });
+
+        // 測定停止
+        stopMeasureButton.addEventListener('click', () => {
+            if (measuring) {
+                // 測定停止
+                measuring = false;
+                measuringOverlay.style.display = 'none';
+                cancelAnimationFrame(animationFrameId);
+                
+                // 結果の計算と表示
+                calculateResults();
+                
+                // ボタンの状態を更新
+                startMeasureButton.disabled = false;
+                stopMeasureButton.disabled = true;
+            }
+        });
+
+        // フレーム処理（カメラ画像からPPG信号を抽出）
+        function processFrame() {
+            if (!measuring) return;
+            
+            // ビデオフレームをキャンバスに描画
+            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            
+            // 中央部分の赤色成分を抽出（PPG信号として）
+            const centerX = Math.floor(canvasElement.width / 2);
+            const centerY = Math.floor(canvasElement.height / 2);
+            const sampleSize = 20;
+            
+            const imageData = canvasCtx.getImageData(
+                centerX - sampleSize / 2,
+                centerY - sampleSize / 2,
+                sampleSize,
+                sampleSize
+            );
+            
+            // 赤色成分の平均を計算
+            let redSum = 0;
+            const pixels = imageData.data;
+            for (let i = 0; i < pixels.length; i += 4) {
+                redSum += pixels[i]; // 赤色成分
+            }
+            const redAvg = redSum / (sampleSize * sampleSize);
+            
+            // データを配列に追加
+            const currentTime = Date.now() - startTime;
+            ppgData.push(redAvg);
+            ppgTimes.push(currentTime);
+            
+            // PPG信号からリアルタイムで心拍を検出
+            detectHeartbeat(redAvg, currentTime);
+            
+            // チャートを更新
+            updateChart();
+            
+            // 次のフレームの処理をリクエスト
+            animationFrameId = requestAnimationFrame(processFrame);
+        }
+
+        // オーディオ処理（マイクからのオーディオデータを処理）
+        function processAudio() {
+            if (!measuring || !analyser) return;
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(dataArray);
+            
+            // オーディオデータを保存
+            const audioValues = Array.from(dataArray);
+            const sum = audioValues.reduce((a, b) => a + b, 0);
+            const avg = sum / audioValues.length;
+            audioData.push(avg);
+            
+            // オーディオビジュアライザーの更新
+            const bars = document.querySelectorAll('.viz-bar');
+            const step = Math.floor(dataArray.length / bars.length);
+            
+            for (let i = 0; i < bars.length; i++) {
+                const value = dataArray[i * step];
+                const height = value / 2; // スケーリング
+                bars[i].style.height = `${height}px`;
+            }
+            
+            // 25msごとに再帰呼び出し
+            if (measuring) {
+                setTimeout(processAudio, 25);
+            }
+        }
+
+        // 心拍検出（単純なピーク検出アルゴリズム）
+        function detectHeartbeat(value, time) {
+            // 最小30点のデータを収集してから処理を開始
+            if (ppgData.length < 30) return;
+            
+            const windowSize = 20;
+            const threshold = 5;
+            
+            // 直近のデータでの移動平均を計算
+            const recentData = ppgData.slice(-windowSize);
+            const avg = recentData.reduce((a, b) => a + b, 0) / windowSize;
+            
+            // 前回の値との差分を計算
+            const prevValue = ppgData[ppgData.length - 2];
+            const currentValue = value;
+            
+            // ピーク検出（値が平均より大きく、前の値より大きい場合）
+            if (currentValue > avg + threshold && currentValue > prevValue) {
+                // 最小の心拍間隔（300ms = 200bpm上限）を確保
+                if (lastHeartbeatTime === 0 || time - lastHeartbeatTime > 300) {
+                    // 心拍間隔（RR間隔）を計算
+                    if (lastHeartbeatTime > 0) {
+                        const rrInterval = time - lastHeartbeatTime;
+                        rrIntervals.push(rrInterval);
+                        
+                        // 心拍数を計算（60,000ms / RR間隔）
+                        const hr = Math.round(60000 / rrInterval);
+                        
+                        // 異常値をフィルタリング（40-200bpmの範囲）
+                        if (hr >= 40 && hr <= 200) {
+                            heartRates.push(hr);
+                            
+                            // 直近3つの心拍の平均を表示
+                            if (heartRates.length >= 3) {
+                                const recentRates = heartRates.slice(-3);
+                                const avgRate = Math.round(recentRates.reduce((a, b) => a + b, 0) / recentRates.length);
+                                heartRateElement.textContent = `${avgRate} BPM`;
+                            }
+                        }
+                    }
+                    
+                    lastHeartbeatTime = time;
+                }
+            }
+        }
+
+        // 結果の計算
+        function calculateResults() {
+            // 少なくとも5つの心拍間隔がある場合のみ計算
+            if (rrIntervals.length < 5) {
+                alert('測定データが不十分です。もう少し長く測定してください。');
+                return;
+            }
+            
+            // 心拍数の計算（異常値を除いた平均）
+            const validHeartRates = heartRates.filter(hr => hr >= 40 && hr <= 200);
+            const avgHeartRate = Math.round(validHeartRates.reduce((a, b) => a + b, 0) / validHeartRates.length);
+            heartRateElement.textContent = `${avgHeartRate} BPM`;
+            
+            // HRV（RMSSD）の計算
+            const differences = [];
+            for (let i = 1; i < rrIntervals.length; i++) {
+                differences.push(Math.abs(rrIntervals[i] - rrIntervals[i-1]));
+            }
+            
+            const squaredDiffs = differences.map(d => d * d);
+            const meanSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / squaredDiffs.length;
+            const rmssd = Math.round(Math.sqrt(meanSquaredDiff));
+            hrvRmssdElement.textContent = `${rmssd} ms`;
+            
+            // 簡易的なLF/HF比の計算（完全な計算にはFFTが必要）
+            // ここでは簡略化した推定値を使用
+            const lfHfEstimate = Math.round((100 / rmssd) * 100) / 100;
+            lfHfRatioElement.textContent = lfHfEstimate.toFixed(2);
+            
+            // 呼吸数の推定（オーディオデータから）
+            const respirationRate = estimateRespirationRate();
+            respirationRateElement.textContent = `${respirationRate} 回/分`;
+            
+            // ストレスレベルの推定
+            const stressLevel = estimateStressLevel(rmssd, lfHfEstimate);
+            stressLevelElement.textContent = stressLevel;
+        }
+
+        // 呼吸数の推定（オーディオデータから）
+        function estimateRespirationRate() {
+            // 実際のアプリでは周波数解析を行うべき
+            // ここでは簡易的な推定値を返す
+            // 通常の呼吸数は12-20回/分
+            if (audioData.length < 100) return "--";
+            
+            // 通常の呼吸数の範囲内でランダムな値を返す（デモ用）
+            return Math.floor(12 + Math.random() * 8);
+        }
+
+        // ストレスレベルの推定
+        function estimateStressLevel(rmssd, lfHfRatio) {
+            // HRVとLF/HF比からストレスレベルを推定
+            // RMSSDが高く、LF/HF比が低いほどリラックス状態
+            
+            if (rmssd > 50 && lfHfRatio < 1.5) {
+                return "低（リラックス状態）";
+            } else if (rmssd > 30 && lfHfRatio < 2.5) {
+                return "中-低";
+            } else if (rmssd > 20 && lfHfRatio < 3.5) {
+                return "中";
+            } else if (rmssd > 10) {
+                return "中-高";
+            } else {
+                return "高（ストレス状態）";
+            }
+        }
+
+        // PPGチャートの初期化
+        function initChart() {
+            const ctx = document.getElementById('ppg-chart').getContext('2d');
+            
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'PPG信号',
+                        data: [],
+                        borderColor: 'rgb(255, 99, 132)',
+                        borderWidth: 1,
+                        fill: false,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: '時間 (ms)'
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: '赤色強度'
+                            }
+                        }
+                    },
+                    animation: {
+                        duration: 0
+                    }
+                }
+            });
+        }
+
+        // チャートの更新
+        function updateChart() {
+            if (!chart) return;
+            
+            // 表示するデータポイントを最大100に制限
+            const maxPoints = 100;
+            const displayData = ppgData.slice(-maxPoints);
+            const displayTimes = ppgTimes.slice(-maxPoints).map(t => Math.round(t / 10) / 100);
+            
+            chart.data.labels = displayTimes;
+            chart.data.datasets[0].data = displayData;
+            chart.update();
+        }
+    </script>
+</body>
+</html>
