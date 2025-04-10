@@ -383,7 +383,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // =========================================================
-    // 瞬時振幅の計算（論文のAlgorithm 1に基づく実装）
+    // 瞬時振幅の計算（論文のAlgorithm 1に忠実な実装）
     // =========================================================
     function calculateInstantaneousAmplitude(signal) {
         // 信号の長さが短い場合はデフォルト値を返す
@@ -396,11 +396,11 @@ document.addEventListener('DOMContentLoaded', function() {
             };
         }
         
-        // 1. 信号をLFとHF帯域にバンドパスフィルタリング（簡易版）
+        // 1. 信号をLFとHF帯域にバンドパスフィルタリング
         const lfFiltered = bandpassFilter(signal, LF_BAND_MIN, LF_BAND_MAX);
         const hfFiltered = bandpassFilter(signal, HF_BAND_MIN, HF_BAND_MAX);
         
-        // 2. ヒルベルト変換を適用して解析信号を生成（簡易版）
+        // 2. ヒルベルト変換を適用して解析信号を生成
         const lfAnalytic = calculateAnalyticSignal(lfFiltered);
         const hfAnalytic = calculateAnalyticSignal(hfFiltered);
         
@@ -408,7 +408,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const lfAmplitudes = lfAnalytic.map(complex => Math.sqrt(complex.real * complex.real + complex.imag * complex.imag));
         const hfAmplitudes = hfAnalytic.map(complex => Math.sqrt(complex.real * complex.real + complex.imag * complex.imag));
         
-        // 4. 外れ値を除去して平均値を計算
+        // 4. 外れ値を除去して平均値を計算（論文のAlgorithm 1ステップ5）
         const lfIA = calculateRobustMean(lfAmplitudes, IA_OUTLIER_PERCENT);
         const hfIA = calculateRobustMean(hfAmplitudes, IA_OUTLIER_PERCENT);
         
@@ -419,57 +419,118 @@ document.addEventListener('DOMContentLoaded', function() {
     // バンドパスフィルタ（簡易版）
     // =========================================================
     function bandpassFilter(signal, lowCutoff, highCutoff) {
-        // 実際のアプリケーションでは適切なデジタルフィルタを実装する必要がある
-        // ここでは簡易版として移動平均フィルタを使用
-        const windowSize = Math.floor(1 / lowCutoff * 10); // 低周波カットオフの逆数を基準
+        if (signal.length < 4) return Array(signal.length).fill(0);
         
-        // 信号の移動平均を計算
-        const filtered = [];
-        for (let i = 0; i < signal.length; i++) {
-            let sum = 0;
-            let count = 0;
+        // サンプリング周波数の推定（PPGサンプリングレート, Hz）
+        // カメラのフレームレートに依存するが、一般的に30-60 Hzと仮定
+        const estimatedFs = 30; 
+        
+        // パディングサイズを信号長の2倍の2のべき乗に設定
+        const paddingSize = Math.pow(2, Math.ceil(Math.log2(signal.length * 2)));
+        
+        // 信号をパディング
+        const paddedSignal = [...signal];
+        while (paddedSignal.length < paddingSize) {
+            paddedSignal.push(0);
+        }
+        
+        // 信号の平均を計算・除去（DCオフセット除去）
+        const mean = paddedSignal.reduce((a, b) => a + b, 0) / paddedSignal.length;
+        const centeredSignal = paddedSignal.map(x => x - mean);
+        
+        // FFT用の実数配列（実部と虚部）を準備
+        const realInput = [...centeredSignal];
+        const imagInput = Array(paddingSize).fill(0);
+        
+        // FFTを実行
+        const { real, imag } = performFFT(realInput, imagInput);
+        
+        // 周波数ビンの大きさを計算
+        const binSize = estimatedFs / paddingSize;
+        
+        // フィルタの適用（周波数領域）
+        for (let i = 0; i < real.length; i++) {
+            // 対応する周波数
+            const freq = i * binSize;
             
-            for (let j = Math.max(0, i - windowSize); j <= Math.min(signal.length - 1, i + windowSize); j++) {
-                sum += signal[j];
-                count++;
+            // 帯域外の周波数をゼロに
+            if (freq < lowCutoff || freq > highCutoff) {
+                real[i] = 0;
+                imag[i] = 0;
             }
             
-            filtered.push(sum / count);
+            // ナイキスト周波数以上も同様に処理（対称性のため）
+            const mirrorFreq = estimatedFs - freq;
+            if (mirrorFreq < lowCutoff || mirrorFreq > highCutoff) {
+                const mirrorIdx = paddingSize - i;
+                if (mirrorIdx >= 0 && mirrorIdx < paddingSize) {
+                    real[mirrorIdx] = 0;
+                    imag[mirrorIdx] = 0;
+                }
+            }
         }
         
-        // 元信号と移動平均の差分を取ることで高周波成分を抽出
-        const result = [];
-        for (let i = 0; i < signal.length; i++) {
-            result.push(signal[i] - filtered[i]);
-        }
+        // 逆FFTを実行
+        const { real: filteredReal } = performIFFT(real, imag);
         
-        return result;
-    }
+        // 元の信号長に戻す
+        return filteredReal.slice(0, signal.length);
+    }    
     
     // =========================================================
     // 解析信号の計算（ヒルベルト変換の簡易実装）
     // =========================================================
     function calculateAnalyticSignal(signal) {
-        // 実際のアプリケーションではFFTベースのヒルベルト変換を使用すべき
-        // ここでは簡易版として全周波数で90度位相シフトを近似
-        const analytic = [];
-        const phaseShift = Math.PI / 2;
-        
-        for (let i = 0; i < signal.length; i++) {
-            // 実部は元の信号
-            const real = signal[i];
-            
-            // 虚部は近似的な位相シフト（簡易版）
-            let imag = 0;
-            if (i > 0 && i < signal.length - 1) {
-                imag = (signal[i+1] - signal[i-1]) / 2; // 中心差分による近似
-            }
-            
-            analytic.push({ real, imag });
+        if (signal.length < 4) {
+            return signal.map(val => ({ real: val, imag: 0 }));
         }
         
-        return analytic;
+        // パディングサイズを信号長の2倍の2のべき乗に設定
+        const paddingSize = Math.pow(2, Math.ceil(Math.log2(signal.length * 2)));
+        
+        // 信号をパディング
+        const paddedSignal = [...signal];
+        while (paddedSignal.length < paddingSize) {
+            paddedSignal.push(0);
+        }
+        
+        // FFT用の実数・虚数配列を準備
+        const realInput = [...paddedSignal];
+        const imagInput = Array(paddingSize).fill(0);
+        
+        // FFTを実行
+        const { real, imag } = performFFT(realInput, imagInput);
+        
+        // ヒルベルト変換のための周波数領域操作
+        // 正の周波数（1からN/2-1）を2倍
+        for (let i = 1; i < paddingSize / 2; i++) {
+            real[i] *= 2;
+            imag[i] *= 2;
+        }
+        
+        // DCと最大周波数（ナイキスト周波数）は変更なし
+        
+        // 負の周波数（N/2+1からN-1）をゼロに
+        for (let i = paddingSize / 2 + 1; i < paddingSize; i++) {
+            real[i] = 0;
+            imag[i] = 0;
+        }
+        
+        // 逆FFTを実行して解析信号を取得
+        const ifft = performIFFT(real, imag);
+        
+        // 複素解析信号を生成（元の信号長に戻す）
+        const analyticSignal = [];
+        for (let i = 0; i < signal.length; i++) {
+            analyticSignal.push({
+                real: ifft.real[i],
+                imag: ifft.imag[i]
+            });
+        }
+        
+        return analyticSignal;
     }
+    
     
     // =========================================================
     // 外れ値を除去した堅牢な平均値計算
@@ -493,7 +554,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         return count > 0 ? sum / count : 0;
-    }
+    }    
 
     // =========================================================
     // オーディオ処理（マイクからのオーディオデータを処理）
@@ -526,19 +587,43 @@ document.addEventListener('DOMContentLoaded', function() {
         // 最小15点のデータを収集してから処理を開始
         if (ppgData.length < 15) return;
         
-        const windowSize = 10;
-        const threshold = 3;
+        // 適応型ウィンドウサイズ（PPGの変動性に応じて調整）
+        const windowSize = Math.min(20, Math.max(5, Math.floor(ppgData.length / 10)));
         
-        // 直近のデータでの移動平均を計算
-        const recentData = ppgData.slice(-windowSize);
-        const avg = recentData.reduce((a, b) => a + b, 0) / windowSize;
+        // 直近のデータを取得
+        const recentData = ppgData.slice(-windowSize * 2);
         
-        // 前回の値との差分を計算
+        // シグナルの変動性を計算
+        const stdDev = calculateStdDev(recentData);
+        
+        // 適応型閾値（信号の変動に応じて調整）
+        const threshold = Math.max(2, stdDev * 1.5);
+        
+        // 移動平均を計算（トレンド除去用）
+        const movingAvg = calculateMovingAverage(recentData, windowSize);
+        const lastMovingAvg = movingAvg[movingAvg.length - 1];
+        
+        // 直近の値からトレンドを除去
+        const detrended = value - lastMovingAvg;
+        
+        // 前回の値との差分を計算（同様にトレンド除去）
         const prevValue = ppgData[ppgData.length - 2];
-        const currentValue = value;
+        const prevDetrended = prevValue - (movingAvg.length > 1 ? movingAvg[movingAvg.length - 2] : lastMovingAvg);
         
-        // ピーク検出（値が平均より大きく、前の値より大きい場合）
-        if (currentValue > avg + threshold && currentValue > prevValue) {
+        // 差分の勾配を計算
+        const gradient = detrended - prevDetrended;
+        
+        // ピーク検出の条件
+        // 1. 値が平均より閾値以上高い
+        // 2. 現在値が前回値より大きい（上昇中）
+        // 3. ピーク（勾配が正から負に変わる点）
+        const isPeak = detrended > threshold && 
+                       detrended > prevDetrended && 
+                       gradient > 0 && 
+                       ppgData.length >= 3 && 
+                       detrended > (ppgData[ppgData.length - 3] - lastMovingAvg);
+        
+        if (isPeak) {
             // 最小の心拍間隔（250ms = 240bpm上限）を確保
             if (lastHeartbeatTime === 0 || time - lastHeartbeatTime > 250) {
                 // 心拍間隔（RR間隔）を計算
@@ -546,22 +631,36 @@ document.addEventListener('DOMContentLoaded', function() {
                     const rrInterval = time - lastHeartbeatTime;
                     
                     // 異常な間隔（10秒以上など）を排除
-                    if (rrInterval < 10000) {
-                        rrIntervals.push(rrInterval);
+                    if (rrInterval < 2000) { // より厳格に2秒以下に制限
                         
-                        // 心拍数を計算（60,000ms / RR間隔）
-                        const hr = Math.round(60000 / rrInterval);
+                        // 以前の心拍間隔の中央値を計算（外れ値検出用）
+                        let medianRR = 1000; // デフォルト値（60bpm相当）
+                        if (rrIntervals.length >= 5) {
+                            const sortedRR = [...rrIntervals].sort((a, b) => a - b);
+                            medianRR = sortedRR[Math.floor(sortedRR.length / 2)];
+                        }
                         
-                        // 異常値をフィルタリング（40-240bpmの範囲）
-                        if (hr >= 40 && hr <= 240) {
-                            heartRates.push(hr);
+                        // 異常値のフィルタリング（中央値の30%から300%の範囲内）
+                        if (rrInterval > medianRR * 0.3 && rrInterval < medianRR * 3) {
+                            rrIntervals.push(rrInterval);
                             
-                            // 直近3つの心拍の平均を表示
-                            if (heartRates.length >= 2) { // 3から2に減らしてより早く表示
-                                const recentRates = heartRates.slice(-3);
-                                const avgRate = Math.round(recentRates.reduce((a, b) => a + b, 0) / recentRates.length);
-                                heartRateElement.textContent = `${avgRate} BPM`;
+                            // 心拍数を計算（60,000ms / RR間隔）
+                            const hr = Math.round(60000 / rrInterval);
+                            
+                            // より厳格な範囲でフィルタリング（40-180bpmの範囲）
+                            if (hr >= 40 && hr <= 180) {
+                                heartRates.push(hr);
+                                
+                                // 直近3つの心拍の中央値を表示（平均ではなく中央値を使用）
+                                if (heartRates.length >= 2) {
+                                    const recentRates = heartRates.slice(-5);
+                                    const sortedRates = [...recentRates].sort((a, b) => a - b);
+                                    const medianRate = sortedRates[Math.floor(sortedRates.length / 2)];
+                                    heartRateElement.textContent = `${medianRate} BPM`;
+                                }
                             }
+                        } else {
+                            console.log('異常なRR間隔を検出しました:', rrInterval, 'ms (中央値:', medianRR, 'ms)');
                         }
                     } else {
                         console.log('異常に長いRR間隔を検出しました:', rrInterval);
@@ -571,7 +670,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 lastHeartbeatTime = time;
             }
         }
-    }
+    }    
     
     // =========================================================
     // スキャッター図のデータポイントを追加
@@ -819,6 +918,115 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // =========================================================
+    // FFT（高速フーリエ変換）の実装
+    // =========================================================
+    function performFFT(real, imag) {
+        // 簡易的なFFT実装
+        // 実際のアプリケーションではwebassemblyなどを使った最適化ライブラリの使用を推奨
+        const n = real.length;
+        
+        // 単一点の場合
+        if (n === 1) {
+            return { real: [...real], imag: [...imag] };
+        }
+        
+        // 偶数と奇数のインデックスに分割
+        const evenReal = [], evenImag = [];
+        const oddReal = [], oddImag = [];
+        
+        for (let i = 0; i < n / 2; i++) {
+            evenReal[i] = real[2 * i];
+            evenImag[i] = imag[2 * i];
+            oddReal[i] = real[2 * i + 1];
+            oddImag[i] = imag[2 * i + 1];
+        }
+        
+        // 再帰的にFFTを適用
+        const even = performFFT(evenReal, evenImag);
+        const odd = performFFT(oddReal, oddImag);
+        
+        // 結果を組み合わせる
+        const resultReal = new Array(n);
+        const resultImag = new Array(n);
+        
+        for (let k = 0; k < n / 2; k++) {
+            // 回転因子
+            const theta = -2 * Math.PI * k / n;
+            const cosTheta = Math.cos(theta);
+            const sinTheta = Math.sin(theta);
+            
+            // 回転因子と奇数部の複素数乗算
+            const twiddleReal = cosTheta * odd.real[k] - sinTheta * odd.imag[k];
+            const twiddleImag = cosTheta * odd.imag[k] + sinTheta * odd.real[k];
+            
+            // 結果の前半部
+            resultReal[k] = even.real[k] + twiddleReal;
+            resultImag[k] = even.imag[k] + twiddleImag;
+            
+            // 結果の後半部
+            resultReal[k + n / 2] = even.real[k] - twiddleReal;
+            resultImag[k + n / 2] = even.imag[k] - twiddleImag;
+        }
+        
+        return { real: resultReal, imag: resultImag };
+    }
+
+    // =========================================================
+    // IFFT（逆高速フーリエ変換）の実装
+    // =========================================================
+    function performIFFT(real, imag) {
+        const n = real.length;
+        
+        // 共役をとる
+        const conjugatedImag = imag.map(x => -x);
+        
+        // FFTを適用
+        const fft = performFFT(real, conjugatedImag);
+        
+        // 結果を正規化し、共役をとる
+        const resultReal = fft.real.map(x => x / n);
+        const resultImag = fft.imag.map(x => -x / n);
+        
+        return { real: resultReal, imag: resultImag };
+    }
+    
+    // =========================================================
+    // 標準偏差の計算
+    // =========================================================
+    function calculateStdDev(values) {
+        if (!values || values.length <= 1) return 0;
+        
+        const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+        const squaredDiffs = values.map(val => (val - mean) ** 2);
+        const variance = squaredDiffs.reduce((sum, val) => sum + val, 0) / values.length;
+        
+        return Math.sqrt(variance);
+    }
+
+    // =========================================================
+    // 移動平均の計算
+    // =========================================================
+    function calculateMovingAverage(values, windowSize) {
+        if (!values || values.length === 0) return [];
+        
+        const result = [];
+        for (let i = 0; i < values.length; i++) {
+            let sum = 0;
+            let count = 0;
+            
+            for (let j = Math.max(0, i - Math.floor(windowSize / 2)); 
+                j <= Math.min(values.length - 1, i + Math.floor(windowSize / 2)); 
+                j++) {
+                sum += values[j];
+                count++;
+            }
+            
+            result.push(sum / count);
+        }
+        
+        return result;
+    }
 
 
 
