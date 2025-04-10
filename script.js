@@ -127,26 +127,72 @@ document.addEventListener('DOMContentLoaded', function() {
             // 最新ブラウザのImageCapture APIを使用してトーチ（フラッシュライト）にアクセス
             const videoTrack = mediaStream.getVideoTracks()[0];
             
-            if (videoTrack) {
-                // トーチの状態をトグル
-                const capabilities = videoTrack.getCapabilities();
+            if (!videoTrack) {
+                console.error('ビデオトラックが見つかりません');
+                alert('カメラのビデオトラックが見つかりません。カメラを再起動してください。');
+                return;
+            }
+            
+            // Android向けの改良: 直接applyConstraintsを試みる方法
+            try {
+                cameraLightOn = !cameraLightOn;
                 
-                // トーチ機能がサポートされているか確認
-                if (capabilities && capabilities.torch) {
+                // トーチの状態をトグル（capabilities確認をスキップ）
+                await videoTrack.applyConstraints({
+                    advanced: [{ torch: cameraLightOn }]
+                });
+                
+                // ボタンのテキストを更新
+                toggleLightButton.innerHTML = cameraLightOn ? 
+                    'カメラライト OFF' : 
+                    'カメラライト ON';
+                
+                console.log(`カメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
+                return; // 成功したら終了
+            } catch (directError) {
+                console.log('直接トーチ制御に失敗、標準方式を試みます:', directError);
+                // 失敗した場合は標準方式を試す（以下に続く）
+                cameraLightOn = !cameraLightOn; // 状態を元に戻す
+            }
+            
+            // 標準方式: capabilities確認してからトーチを制御
+            const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : null;
+            
+            // トーチ機能がサポートされているか確認
+            if (capabilities && capabilities.torch) {
+                cameraLightOn = !cameraLightOn;
+                await videoTrack.applyConstraints({
+                    advanced: [{ torch: cameraLightOn }]
+                });
+                
+                // ボタンのテキストを更新
+                toggleLightButton.innerHTML = cameraLightOn ? 
+                    'カメラライト OFF' : 
+                    'カメラライト ON';
+                
+                console.log(`カメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
+            } else {
+                // Android向けの代替方法を試す
+                try {
                     cameraLightOn = !cameraLightOn;
-                    await videoTrack.applyConstraints({
+                    
+                    // Android向けの代替方法
+                    const constraints = {
                         advanced: [{ torch: cameraLightOn }]
-                    });
+                    };
+                    
+                    await videoTrack.applyConstraints(constraints);
                     
                     // ボタンのテキストを更新
                     toggleLightButton.innerHTML = cameraLightOn ? 
                         'カメラライト OFF' : 
                         'カメラライト ON';
                     
-                    console.log(`カメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
-                } else {
-                    console.log('このデバイスはカメラライト（トーチ）をサポートしていません');
-                    alert('このデバイスはカメラライト（トーチ）をサポートしていません');
+                    console.log(`代替方法でカメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
+                } catch (fallbackError) {
+                    console.error('代替方法でもカメラライトの制御に失敗:', fallbackError);
+                    cameraLightOn = !cameraLightOn; // 状態を元に戻す
+                    alert('このデバイスはカメラライト（トーチ）をサポートしていないか、アクセス許可がありません。');
                 }
             }
         } catch (error) {
