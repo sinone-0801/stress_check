@@ -63,6 +63,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let permissionRequested = false; // 権限リクエストフラグ
     let cameraLightOn = false;      // カメラライトの状態
     let signalQuality = 0;          // 信号品質（0-1）
+    let isAndroid = /Android/i.test(navigator.userAgent); // Android端末かどうか
 
     // =========================================================
     // カメラへのアクセスを取得
@@ -110,6 +111,7 @@ document.addEventListener('DOMContentLoaded', function() {
             initScatterChart();
             
             console.log('カメラの初期化が完了しました');
+            console.log(`デバイス検出: ${isAndroid ? 'Android' : 'Android以外'}`);
         } catch (error) {
             console.error('カメラへのアクセスエラー:', error);
             alert('カメラにアクセスできませんでした。設定を確認してください。\n\nエラー: ' + error.message);
@@ -133,7 +135,42 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
             
-            // Android向けの改良: 直接applyConstraintsを試みる方法
+            // Android端末向けの特別な処理
+            if (isAndroid) {
+                try {
+                    cameraLightOn = !cameraLightOn;
+                    console.log(`Android端末向け特別処理: カメラライトを${cameraLightOn ? 'オン' : 'オフ'}にします`);
+                    
+                    // 一部のAndroid端末では、トラックを一時的に無効化してから再度有効化すると
+                    // トーチが正しく動作することがある
+                    videoTrack.enabled = false;
+                    
+                    // 少し待機
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                    // トーチの設定を適用
+                    await videoTrack.applyConstraints({
+                        advanced: [{ torch: cameraLightOn }]
+                    });
+                    
+                    // トラックを再度有効化
+                    videoTrack.enabled = true;
+                    
+                    // ボタンのテキストを更新
+                    toggleLightButton.innerHTML = cameraLightOn ? 
+                        'カメラライト OFF' : 
+                        'カメラライト ON';
+                    
+                    console.log(`Android向け特別処理でカメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
+                    return; // 成功したら終了
+                } catch (androidError) {
+                    console.log('Android向け特別処理に失敗、標準方式を試みます:', androidError);
+                    cameraLightOn = !cameraLightOn; // 状態を元に戻す
+                    // 失敗した場合は標準方式を試す（以下に続く）
+                }
+            }
+            
+            // 標準方式: 直接applyConstraintsを試みる
             try {
                 cameraLightOn = !cameraLightOn;
                 
@@ -150,12 +187,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.log(`カメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
                 return; // 成功したら終了
             } catch (directError) {
-                console.log('直接トーチ制御に失敗、標準方式を試みます:', directError);
-                // 失敗した場合は標準方式を試す（以下に続く）
+                console.log('直接トーチ制御に失敗、capabilities確認方式を試みます:', directError);
+                // 失敗した場合はcapabilities確認方式を試す（以下に続く）
                 cameraLightOn = !cameraLightOn; // 状態を元に戻す
             }
             
-            // 標準方式: capabilities確認してからトーチを制御
+            // capabilities確認方式: capabilities確認してからトーチを制御
             const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : null;
             
             // トーチ機能がサポートされているか確認
@@ -172,11 +209,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 console.log(`カメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
             } else {
-                // Android向けの代替方法を試す
+                // 最終手段: 別の方法を試す
                 try {
                     cameraLightOn = !cameraLightOn;
                     
-                    // Android向けの代替方法
+                    // 別の制約の書き方を試す
                     const constraints = {
                         advanced: [{ torch: cameraLightOn }]
                     };
@@ -190,7 +227,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     console.log(`代替方法でカメラライトを${cameraLightOn ? 'オン' : 'オフ'}にしました`);
                 } catch (fallbackError) {
-                    console.error('代替方法でもカメラライトの制御に失敗:', fallbackError);
+                    console.error('すべての方法でカメラライトの制御に失敗:', fallbackError);
                     cameraLightOn = !cameraLightOn; // 状態を元に戻す
                     alert('このデバイスはカメラライト（トーチ）をサポートしていないか、アクセス許可がありません。');
                 }
@@ -206,47 +243,91 @@ document.addEventListener('DOMContentLoaded', function() {
     // =========================================================
     function startMeasurement() {
         if (!measuring) {
-            // 測定開始
-            measuring = true;
-            measuringOverlay.style.display = 'flex';
-            startTime = Date.now();
-            measurementDuration = 0;
-            ppgData = [];
-            ppgTimes = [];
-            lfData = [];
-            hfData = [];
-            lfIAData = [];
-            hfIAData = [];
-            heartRates = [];
-            rrIntervals = [];
-            scatterData = [];
-            lastHeartbeatTime = 0;
-            signalQuality = 0;
-            
-            // 信号品質インジケータをリセット
-            updateSignalQuality(0);
-            
-            // 完了メッセージを非表示
-            completionMessage.style.display = 'none';
-            
-            // ボタンの状態を更新
-            startMeasureButton.disabled = true;
-            stopMeasureButton.disabled = true; // 最初は無効化
-            
-            // カウントダウンの開始
-            startCountdown(MINIMUM_MEASUREMENT_TIME);
-            
-            // 測定ループを開始
-            animationFrameId = requestAnimationFrame(processFrame);
-            
-            // 自動停止タイマーを設定（カウントダウン後5秒経過で自動停止）
-            setTimeout(() => {
-                if (measuring) {
-                    console.log('自動測定停止タイマーが作動しました');
-                    stopMeasurement();
+            // カメラライトが必要かどうかを確認
+            if (!cameraLightOn) {
+                const userConfirm = confirm('より正確な測定のためにカメラライトをオンにすることをお勧めします。カメラライトをオンにしますか？');
+                if (userConfirm) {
+                    // カメラライトをオンにする
+                    toggleCameraLight().then(() => {
+                        // カメラライトをオンにした後に測定を開始
+                        startActualMeasurement();
+                    }).catch(error => {
+                        console.error('カメラライトのオン中にエラーが発生しました:', error);
+                        // エラーが発生しても測定は開始
+                        startActualMeasurement();
+                    });
+                } else {
+                    // ユーザーがキャンセルした場合でも測定を開始
+                    startActualMeasurement();
                 }
-            }, (MINIMUM_MEASUREMENT_TIME + 5) * 1000);
+            } else {
+                // カメラライトが既にオンの場合は直接測定開始
+                startActualMeasurement();
+            }
         }
+    }
+    
+    // =========================================================
+    // 実際の測定開始処理
+    // =========================================================
+    function startActualMeasurement() {
+        // 測定開始
+        measuring = true;
+        measuringOverlay.style.display = 'flex';
+        startTime = Date.now();
+        measurementDuration = 0;
+        ppgData = [];
+        ppgTimes = [];
+        lfData = [];
+        hfData = [];
+        lfIAData = [];
+        hfIAData = [];
+        heartRates = [];
+        rrIntervals = [];
+        scatterData = [];
+        lastHeartbeatTime = 0;
+        signalQuality = 0;
+        
+        // 信号品質インジケータをリセット
+        updateSignalQuality(0);
+        
+        // 完了メッセージを非表示
+        completionMessage.style.display = 'none';
+        
+        // ボタンの状態を更新
+        startMeasureButton.disabled = true;
+        stopMeasureButton.disabled = true; // 最初は無効化
+        
+        // カウントダウンの開始
+        startCountdown(MINIMUM_MEASUREMENT_TIME);
+        
+        // 測定ループを開始
+        animationFrameId = requestAnimationFrame(processFrame);
+        
+        // 自動停止タイマーを設定（カウントダウン後5秒経過で自動停止）
+        setTimeout(() => {
+            if (measuring) {
+                console.log('自動測定停止タイマーが作動しました');
+                stopMeasurement();
+            }
+        }, (MINIMUM_MEASUREMENT_TIME + 5) * 1000);
+        
+        // 信号品質チェックタイマー
+        setTimeout(() => {
+            if (measuring && signalQuality < 0.3) {
+                // 測定開始から5秒後に信号品質が低い場合、警告を表示
+                if (!cameraLightOn) {
+                    const userConfirm = confirm('信号品質が低いです。カメラライトをオンにして測定精度を向上させますか？');
+                    if (userConfirm) {
+                        toggleCameraLight().catch(error => {
+                            console.error('カメラライトのオン中にエラーが発生しました:', error);
+                        });
+                    }
+                } else {
+                    alert('信号品質が低いです。指先をカメラにしっかりと当て、動かさないようにしてください。');
+                }
+            }
+        }, 5000);
     }
 
     // =========================================================
@@ -434,13 +515,30 @@ document.addEventListener('DOMContentLoaded', function() {
         const mean = recentSignal.reduce((a, b) => a + b, 0) / recentSignal.length;
         const cv = (stdDev / mean) * 100; // 変動係数（％）
         
+        // カメラライトの状態に基づいて閾値を調整
+        const minCvThreshold = cameraLightOn ? 0.3 : 0.5; // ライトがオンの場合は閾値を下げる
+        
         // 変動が極端に小さい場合は、信号が検出できていない可能性がある
-        if (cv < 0.5) {
+        if (cv < minCvThreshold) {
+            // カメラライトがオフで変動が小さい場合、ライトをオンにするよう提案
+            if (!cameraLightOn && measuring) {
+                console.log('信号変動が小さすぎます。カメラライトをオンにすることをお勧めします。');
+                // 測定中の場合のみ、UIに警告を表示
+                if (qualityElement) {
+                    qualityElement.textContent = `信号品質: 低 - ライトをオンにしてください`;
+                    qualityElement.style.color = 'red';
+                }
+            }
             return { quality: 0.1, reason: "信号変動が小さすぎる" };
         }
         
         // 変動が極端に大きい場合は、ノイズが多い可能性がある
         if (cv > 20) {
+            // 測定中の場合のみ、UIに警告を表示
+            if (measuring && qualityElement) {
+                qualityElement.textContent = `信号品質: 低 - 指を動かさないでください`;
+                qualityElement.style.color = 'red';
+            }
             return { quality: 0.3, reason: "信号変動が大きすぎる" };
         }
         
@@ -939,7 +1037,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 // RR間隔が異常でない場合のみ追加
                 // 中央値の30～170%の範囲に収まるRR間隔のみを有効とする
-                if (rrInterval >= medianRR * 0.3 && rrInterval <= medianRR * 1.7) {
+                // より厳格なフィルタリング: 50%～150%に制限
+                if (rrInterval >= medianRR * 0.5 && rrInterval <= medianRR * 1.5) {
                     rrIntervals.push(rrInterval);
                     
                     // 心拍数を計算（60,000ms / RR間隔）
@@ -1038,34 +1137,47 @@ document.addEventListener('DOMContentLoaded', function() {
         // 連続する間隔の差分を計算
         const differences = [];
         for (let i = 1; i < intervals.length; i++) {
-            // 大きな変動を除外（前の間隔から80%以上変化している場合）
+            // 大きな変動を除外（前の間隔から50%以上変化している場合）- より厳格なフィルタリング
             const percentChange = Math.abs(intervals[i] - intervals[i-1]) / intervals[i-1];
-            if (percentChange <= 0.8) {
+            if (percentChange <= 0.5) {
                 differences.push(Math.abs(intervals[i] - intervals[i-1]));
             }
         }
         
         // 差分値の外れ値を除外
         if (differences.length > 3) {
-            // ソートして上位10%を除外
+            // ソートして上位10%と下位10%を除外（より堅牢な外れ値除去）
             differences.sort((a, b) => a - b);
-            const cutoff = Math.floor(differences.length * 0.9);
-            differences.splice(cutoff);
+            const lowerCutoff = Math.floor(differences.length * 0.1);
+            const upperCutoff = Math.floor(differences.length * 0.9);
+            const filteredDifferences = differences.slice(lowerCutoff, upperCutoff);
+            
+            // 二乗平均平方根の計算
+            if (filteredDifferences.length > 0) {
+                const squaredDiffs = filteredDifferences.map(d => d * d);
+                const meanSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / squaredDiffs.length;
+                const rmssd = Math.round(Math.sqrt(meanSquaredDiff));
+                
+                // 異常値のチェック (1msから100msの範囲が一般的) - より厳格な範囲
+                if (rmssd < 1 || rmssd > 100 || isNaN(rmssd)) {
+                    console.log('RMSSDの値が異常です:', rmssd);
+                    return 30; // 一般的な健康な成人の値
+                }
+                
+                return rmssd;
+            }
         }
         
-        // 二乗平均平方根の計算
+        // 差分が少ない場合や全て除外された場合
         if (differences.length > 0) {
             const squaredDiffs = differences.map(d => d * d);
             const meanSquaredDiff = squaredDiffs.reduce((a, b) => a + b, 0) / squaredDiffs.length;
             const rmssd = Math.round(Math.sqrt(meanSquaredDiff));
             
-            // 異常値のチェック (1msから200msの範囲が一般的)
-            if (rmssd < 1 || rmssd > 200 || isNaN(rmssd)) {
-                console.log('RMSSDの値が異常です:', rmssd);
-                return 30; // 一般的な健康な成人の値
+            // より厳格な範囲チェック
+            if (rmssd >= 1 && rmssd <= 100 && !isNaN(rmssd)) {
+                return rmssd;
             }
-            
-            return rmssd;
         }
         
         return 30; // データが不足している場合のデフォルト値
