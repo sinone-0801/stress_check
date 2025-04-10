@@ -6,72 +6,6 @@
     <title>スマートフォン健康モニタリング</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
-    <style>
-        /* 追加スタイル */
-        .signal-quality-indicator {
-            margin: 10px 0;
-            padding: 10px;
-            border-radius: 5px;
-            background-color: #f8f9fa;
-            border: 1px solid #ddd;
-        }
-        .quality-meter {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        .meter-container {
-            height: 10px;
-            width: 100%;
-            background-color: #e0e0e0;
-            border-radius: 5px;
-            overflow: hidden;
-        }
-        .meter-bar {
-            height: 100%;
-            width: 0%;
-            background-color: #ccc;
-            transition: width 0.5s ease, background-color 0.5s ease;
-        }
-        .extended-controls {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 10px;
-            justify-content: center;
-        }
-        .extended-controls button {
-            padding: 8px 12px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            background-color: #f8f9fa;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
-        .extended-controls button:hover {
-            background-color: #e9ecef;
-        }
-        .extended-controls button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        .settings-panel {
-            margin-top: 15px;
-            padding: 10px;
-            border-radius: 5px;
-            background-color: #f8f9fa;
-            border: 1px solid #ddd;
-        }
-        .instruction strong {
-            color: #d9534f;
-        }
-        .tip {
-            font-style: italic;
-            color: #666;
-            margin-top: 5px;
-            font-size: 0.9em;
-        }
-    </style>
 </head>
 <body>
     <div class="container">
@@ -114,12 +48,6 @@
             <button id="start-camera">カメラをオンにする</button>
             <button id="start-measure" disabled>測定開始</button>
             <button id="stop-measure" disabled>測定停止</button>
-            
-            <!-- 拡張コントロールパネル -->
-            <div class="extended-controls">
-                <button id="toggle-light" disabled>カメラライト ON/OFF</button>
-                <button id="mute-audio">音声ミュート</button>
-            </div>
         </div>
 
         <div id="completion-message" class="status-message">
