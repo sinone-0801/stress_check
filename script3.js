@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 定数および設定
     // =========================================================
     const MINIMUM_MEASUREMENT_TIME = 30; // 最低30秒の測定
+    const SAMPLING_INTERVAL_MS = 25;     // オーディオサンプリング間隔（ms）
     const LF_BAND_MIN = 0.04;            // LF帯域の下限（Hz）
     const LF_BAND_MAX = 0.15;            // LF帯域の上限（Hz）
     const HF_BAND_MIN = 0.15;            // HF帯域の下限（Hz）
@@ -27,6 +28,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const startMeasureButton = document.getElementById('start-measure');
     const stopMeasureButton = document.getElementById('stop-measure');
     const toggleLightButton = document.getElementById('toggle-light');
+    const muteAudioButton = document.getElementById('mute-audio');
     const measuringOverlay = document.getElementById('measuring-overlay');
     const countdownElement = document.getElementById('countdown');
     const heartRateElement = document.getElementById('heart-rate');
@@ -35,6 +37,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const respirationRateElement = document.getElementById('respiration-rate');
     const stressLevelElement = document.getElementById('stress-level');
     const stressStateElement = document.getElementById('stress-state');
+    const audioViz = document.getElementById('audio-viz');
     const completionMessage = document.getElementById('completion-message');
     const qualityElement = document.getElementById('signal-quality');
     const qualityBar = document.getElementById('quality-bar');
@@ -43,6 +46,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // グローバル変数
     // =========================================================
     let mediaStream = null;
+    let audioContext = null;
+    let analyser = null;
     let measuring = false;
     let animationFrameId = null;
     let ppgData = [];
@@ -51,6 +56,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let hfData = [];    // HF帯域のデータ（フィルタリング後）
     let lfIAData = [];  // LF帯域の瞬時振幅データ
     let hfIAData = [];  // HF帯域の瞬時振幅データ
+    let audioData = [];
     let startTime = 0;
     let heartRates = [];
     let lastHeartbeatTime = 0;
@@ -62,10 +68,48 @@ document.addEventListener('DOMContentLoaded', function() {
     let countdownInterval = null;
     let permissionRequested = false; // 権限リクエストフラグ
     let cameraLightOn = false;      // カメラライトの状態
+    let audioMuted = false;         // 音声ミュート状態
     let signalQuality = 0;          // 信号品質（0-1）
 
+    // オーディオコンテキストの設定を修正
+    function setupAudio(stream) {
+        // 既存のオーディオコンテキストがあれば閉じる
+        if (audioContext) {
+            audioContext.close();
+        }
+        
+        // 新しいオーディオコンテキストを作成
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioSource = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        
+        // マイク入力をスピーカーに出力しないようにする
+        // (analyserには接続するが、audioContextのdestinationには接続しない)
+        audioSource.connect(analyser);
+        
+        // ループバックを防ぐため以下は行わない:
+        // analyser.connect(audioContext.destination);
+    }
+
     // =========================================================
-    // カメラへのアクセスを取得
+    // オーディオビジュアライザーの設定
+    // =========================================================
+    function setupAudioVisualizer() {
+        // 既存の要素をクリア
+        audioViz.innerHTML = '';
+        
+        const barCount = 64;
+        for (let i = 0; i < barCount; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'viz-bar';
+            bar.style.left = `${i * 4}px`;
+            audioViz.appendChild(bar);
+        }
+    }
+
+    // =========================================================
+    // カメラとマイクへのアクセスを取得
     // =========================================================
     async function startCamera() {
         if (permissionRequested) {
@@ -74,16 +118,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         permissionRequested = true;
-        console.log('カメラの権限をリクエスト中...');
+        console.log('カメラとマイクの権限をリクエスト中...');
         
         try {
-            // カメラのストリームを取得
+            // カメラとマイクのストリームを取得
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     facingMode: 'environment',
                     width: { ideal: 640 },
                     height: { ideal: 480 }
-                }
+                },
+                audio: true
             });
             
             console.log('ストリームを取得しました');
@@ -92,6 +137,14 @@ document.addEventListener('DOMContentLoaded', function() {
             // ビデオ要素にストリームをセット
             videoElement.srcObject = stream;
             
+            // オーディオコンテキストの設定
+            setupAudio(stream);
+            // audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            // const audioSource = audioContext.createMediaStreamSource(stream);
+            // analyser = audioContext.createAnalyser();
+            // analyser.fftSize = 256;
+            // audioSource.connect(analyser);
+            
             // ビデオプレイヤーを再生
             await videoElement.play();
             console.log('ビデオ再生開始');
@@ -99,6 +152,9 @@ document.addEventListener('DOMContentLoaded', function() {
             // キャンバスのサイズを設定
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
+            
+            // オーディオビジュアライザーのセットアップ
+            setupAudioVisualizer();
             
             // ボタンの状態を更新
             startCameraButton.disabled = true;
@@ -109,11 +165,50 @@ document.addEventListener('DOMContentLoaded', function() {
             initChart();
             initScatterChart();
             
-            console.log('カメラの初期化が完了しました');
+            // オーディオビジュアライザーのテスト処理を開始
+            testAudioVisualizer();
+            
+            console.log('カメラとマイクの初期化が完了しました');
         } catch (error) {
-            console.error('カメラへのアクセスエラー:', error);
-            alert('カメラにアクセスできませんでした。設定を確認してください。\n\nエラー: ' + error.message);
+            console.error('カメラまたはマイクへのアクセスエラー:', error);
+            alert('カメラまたはマイクにアクセスできませんでした。設定を確認してください。\n\nエラー: ' + error.message);
             permissionRequested = false;
+        }
+    }
+    
+    // =========================================================
+    // オーディオビジュアライザーのテスト
+    // =========================================================
+    function testAudioVisualizer() {
+        if (!analyser) return;
+        
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        
+        // オーディオビジュアライザーの更新
+        updateAudioVisualizer(dataArray);
+        
+        // 測定中でなくても表示を更新
+        if (!measuring) {
+            requestAnimationFrame(testAudioVisualizer);
+        }
+    }
+    
+    // =========================================================
+    // オーディオビジュアライザーの更新
+    // =========================================================
+    function updateAudioVisualizer(dataArray) {
+        const bars = document.querySelectorAll('.viz-bar');
+        if (bars.length > 0) {
+            const step = Math.ceil(dataArray.length / bars.length);
+            
+            for (let i = 0; i < bars.length; i++) {
+                // インデックスが範囲外にならないようにする
+                const index = Math.min(i * step, dataArray.length - 1);
+                const value = dataArray[index] || 0;
+                const height = value / 2; // スケーリング
+                bars[i].style.height = `${height}px`;
+            }
         }
     }
 
@@ -156,6 +251,33 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // =========================================================
+    // 音声ミュートのトグル
+    // =========================================================
+    function toggleAudioMute() {
+        if (!audioContext) return;
+        
+        audioMuted = !audioMuted;
+        
+        // オーディオコンテキストの状態を変更
+        if (audioMuted) {
+            if (audioContext.state === 'running') {
+                audioContext.suspend();
+            }
+        } else {
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        }
+        
+        // ボタンのテキストを更新
+        muteAudioButton.innerHTML = audioMuted ? 
+            '音声オン' : 
+            '音声ミュート';
+        
+        console.log(`音声を${audioMuted ? 'ミュート' : 'オン'}にしました`);
+    }
+
+    // =========================================================
     // 測定開始
     // =========================================================
     function startMeasurement() {
@@ -171,6 +293,7 @@ document.addEventListener('DOMContentLoaded', function() {
             hfData = [];
             lfIAData = [];
             hfIAData = [];
+            audioData = [];
             heartRates = [];
             rrIntervals = [];
             scatterData = [];
@@ -192,6 +315,9 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // 測定ループを開始
             animationFrameId = requestAnimationFrame(processFrame);
+            
+            // オーディオ処理のループを開始
+            processAudio();
             
             // 自動停止タイマーを設定（カウントダウン後5秒経過で自動停止）
             setTimeout(() => {
@@ -960,6 +1086,30 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // =========================================================
+    // オーディオ処理（マイクからのオーディオデータを処理）
+    // =========================================================
+    function processAudio() {
+        if (!measuring || !analyser) return;
+        
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        
+        // オーディオデータを保存
+        const audioValues = Array.from(dataArray);
+        const sum = audioValues.reduce((a, b) => a + b, 0);
+        const avg = sum / audioValues.length;
+        audioData.push(avg);
+        
+        // オーディオビジュアライザーの更新
+        updateAudioVisualizer(dataArray);
+        
+        // 25msごとに再帰呼び出し
+        if (measuring) {
+            setTimeout(processAudio, SAMPLING_INTERVAL_MS);
+        }
+    }
+
+    // =========================================================
     // スキャッター図のデータポイントを追加
     // =========================================================
     function addScatterDataPoint(lfValue, hfValue) {
@@ -1025,9 +1175,6 @@ document.addEventListener('DOMContentLoaded', function() {
         return 30; // データが不足している場合のデフォルト値
     }
 
-    // =========================================================
-    // 最終スキャッターデータポイントを追加
-    // =========================================================
     function addFinalScatterPoint(lfValue, hfValue) {
         if (!scatterChart) return;
         
@@ -1151,8 +1298,8 @@ document.addEventListener('DOMContentLoaded', function() {
         
         lfHfRatioElement.textContent = lfHfRatio.toFixed(2);
         
-        // 呼吸数は直接計測していないため推定値を表示
-        const respirationRate = estimateRespirationRateFromHrv(rrIntervals);
+        // 呼吸数の推定（オーディオデータから）
+        const respirationRate = estimateRespirationRate();
         respirationRateElement.textContent = `${respirationRate} 回/分`;
         
         // ストレスレベルの推定 - 論文に基づいて強化
@@ -1181,27 +1328,6 @@ document.addEventListener('DOMContentLoaded', function() {
             stressState: stressState,
             signalQuality: signalQuality
         });
-    }
-
-    // =========================================================
-    // 心拍変動から呼吸数を推定
-    // =========================================================
-    function estimateRespirationRateFromHrv(intervals) {
-        if (!intervals || intervals.length < 5) {
-            return "12-16"; // デフォルト範囲
-        }
-        
-        // 呼吸性洞性不整脈（RSA）に基づく推定
-        // RSAは心拍変動の主要なHF成分として現れる
-        
-        // 心拍数から推定（一般的に呼吸数は心拍数の約1/4〜1/5）
-        const heartRateFromIntervals = 60000 / (intervals.reduce((a, b) => a + b, 0) / intervals.length);
-        let respirationRate = Math.round(heartRateFromIntervals / 4.5);
-        
-        // 生理学的に妥当な範囲（8-25回/分）に制限
-        respirationRate = Math.max(8, Math.min(25, respirationRate));
-        
-        return respirationRate;
     }
 
     // =========================================================
@@ -1405,6 +1531,69 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             return "非常に高い";
         }
+    }
+    
+    // =========================================================
+    // 呼吸数の推定
+    // =========================================================
+    function estimateRespirationRate() {
+        if (!audioData || audioData.length < 100) {
+            return "--";
+        }
+        
+        // 呼吸の推定（単純化したアルゴリズム）
+        // オーディオデータの変動からピークを検出
+        const peaks = [];
+        const threshold = 10;
+        const minDistance = 20; // 最小ピーク間距離（サンプル数）
+        
+        let lastPeakIndex = -minDistance;
+        
+        for (let i = 2; i < audioData.length - 2; i++) {
+            // 前後のデータより大きい場合、ピークとみなす
+            if (audioData[i] > audioData[i-1] && 
+                audioData[i] > audioData[i-2] && 
+                audioData[i] > audioData[i+1] && 
+                audioData[i] > audioData[i+2] && 
+                audioData[i] > threshold &&
+                i - lastPeakIndex >= minDistance) {
+                
+                peaks.push(i);
+                lastPeakIndex = i;
+            }
+        }
+        
+        // ピーク間の平均間隔を計算
+        if (peaks.length < 2) {
+            // ピークが少なすぎる場合、デフォルト値を返す
+            return "12-16";
+        }
+        
+        const intervals = [];
+        for (let i = 1; i < peaks.length; i++) {
+            intervals.push(peaks[i] - peaks[i-1]);
+        }
+        
+        // 外れ値を除外
+        intervals.sort((a, b) => a - b);
+        const validIntervals = intervals.filter(
+            interval => interval >= intervals[Math.floor(intervals.length * 0.1)] && 
+                         interval <= intervals[Math.floor(intervals.length * 0.9)]
+        );
+        
+        if (validIntervals.length === 0) {
+            return "12-16";
+        }
+        
+        const avgInterval = validIntervals.reduce((a, b) => a + b, 0) / validIntervals.length;
+        
+        // 呼吸数の計算（サンプリングレートを考慮）
+        // この例では25msごとにサンプリングしているため、1分あたりのサンプル数は60 * 1000 / 25 = 2400
+        const samplesPerMinute = 60 * 1000 / SAMPLING_INTERVAL_MS;
+        const respirationRate = Math.round(samplesPerMinute / avgInterval);
+        
+        // 一般的な呼吸数の範囲（8-25回/分）に制限
+        return Math.max(8, Math.min(25, respirationRate));
     }
     
     // =========================================================
@@ -1674,7 +1863,8 @@ document.addEventListener('DOMContentLoaded', function() {
     startMeasureButton.addEventListener('click', startMeasurement);
     stopMeasureButton.addEventListener('click', stopMeasurement);
     toggleLightButton.addEventListener('click', toggleCameraLight);
+    muteAudioButton.addEventListener('click', toggleAudioMute);
     
     // 初期化メッセージ
-    console.log('オーディオなし版アプリケーションが初期化されました');
+    console.log('改良版アプリケーションが初期化されました');
 });
