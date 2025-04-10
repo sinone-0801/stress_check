@@ -1660,11 +1660,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 初期化メッセージ
     console.log('アプリケーションを初期化しました');
-    
-    // DOM読み込み完了時に初期化
-    document.addEventListener('DOMContentLoaded', function() {
-        // 元のコードの初期化後に拡張機能を追加
-        setTimeout(initializeEnhancements, 500);
-    });
-    
+
+    setTimeout(initializeEnhancements, 500);
+
 });
